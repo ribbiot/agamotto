@@ -18,7 +18,10 @@ import {
   getFreshGitHubToken,
   githubTokenFromFresh,
 } from '../../../../../src/lib/github-auth'
+import { githubLoginFromUser } from '../../../../../src/lib/github-users'
 import { parsePrUrl } from '../../../../../src/lib/queue'
+import { reviewHistoryMetadata } from '../../../../../src/lib/review-history-payload'
+import { createSupabaseServerClient } from '../../../../../src/lib/supabase/server'
 import { markPrReviewed } from '../../../../../src/memory/tracked-pr-store'
 import {
   SectionDecisionSchema,
@@ -89,6 +92,17 @@ async function postGithubPrComment(opts: {
   } catch (err) {
     console.error('[finalize] GitHub comment post failed:', err)
     return withBody({ error: String(err) })
+  }
+}
+
+async function sessionGithubLogin(): Promise<string | undefined> {
+  try {
+    const supabase = await createSupabaseServerClient()
+    const { data, error } = await supabase.auth.getUser()
+    if (error) return undefined
+    return githubLoginFromUser(data.user)
+  } catch {
+    return undefined
   }
 }
 
@@ -209,6 +223,18 @@ export async function POST(
     )
   }
   const memory = createMemoryStore()
+  const githubLogin = await sessionGithubLogin()
+  const historyMetadata = reviewHistoryMetadata({
+    prUrl,
+    parsed: parsePrUrl(prUrl),
+    prTitle: review.summary.slice(0, 80),
+    githubLogin,
+  })
+  const persistHistory = (payload: unknown): Promise<void> =>
+    memory
+      .storeReview(payload, historyMetadata)
+      .catch(err => console.error('[finalize] storeReview failed:', err))
+
   const freshGithub = await getFreshGitHubToken()
   const githubToken = githubTokenFromFresh(freshGithub)
   const sessionExpiredComment =
@@ -240,20 +266,7 @@ export async function POST(
       ),
       ...sectionsPatch,
     }
-    await memory
-      .storeReview(
-        { review, submission: approvalSubmission },
-        {
-          prUrl,
-          repoName: prUrlParts
-            ? `${prUrlParts[1]}/${prUrlParts[2]}`
-            : 'unknown/unknown',
-          prTitle: review.summary.slice(0, 80),
-          author: 'unknown',
-          prNumber: prUrlParts ? Number(prUrlParts[3]) : 0,
-        }
-      )
-      .catch(err => console.error('[finalize] storeReview failed:', err))
+    await persistHistory({ review, submission: approvalSubmission })
 
     try {
       await setReviewSubmission(reviewId, approvalSubmission)
@@ -321,20 +334,7 @@ export async function POST(
     ...sectionsPatch,
   }
 
-  await memory
-    .storeReview(
-      { review, submission },
-      {
-        prUrl,
-        repoName: prUrlParts
-          ? `${prUrlParts[1]}/${prUrlParts[2]}`
-          : 'unknown/unknown',
-        prTitle: review.summary.slice(0, 80),
-        author: 'unknown',
-        prNumber: prUrlParts ? Number(prUrlParts[3]) : 0,
-      }
-    )
-    .catch(err => console.error('[finalize] storeReview failed:', err))
+  await persistHistory({ review, submission })
 
   try {
     await setReviewSubmission(reviewId, submission)

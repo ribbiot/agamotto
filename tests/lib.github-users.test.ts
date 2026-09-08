@@ -1,6 +1,7 @@
 import {
   githubLoginFromUser,
   isAdminGithubUser,
+  isAllowedGithubLogin,
   parseGithubLogins,
 } from '../src/lib/github-users'
 
@@ -99,5 +100,23 @@ describe('isAdminGithubUser', () => {
 
   it('denies users without a GitHub login when the allowlist is set', () => {
     expect(isAdminGithubUser({ id: 'user-1' }, 'atharrison')).toBe(false)
+  })
+})
+
+describe('isAllowedGithubLogin', () => {
+  it('rejects missing or blank logins', () => {
+    expect(isAllowedGithubLogin(null, undefined)).toBe(false)
+    expect(isAllowedGithubLogin('  ', undefined)).toBe(false)
+  })
+
+  it('allows any login when the allowlist is empty', () => {
+    expect(isAllowedGithubLogin('dev', undefined)).toBe(true)
+    expect(isAllowedGithubLogin('dev', '')).toBe(true)
+    expect(isAllowedGithubLogin('Dev', '  ,  ')).toBe(true)
+  })
+
+  it('requires a listed login when the allowlist is set', () => {
+    expect(isAllowedGithubLogin('Dev', 'alice,dev')).toBe(true)
+    expect(isAllowedGithubLogin('other', 'alice,dev')).toBe(false)
   })
 })

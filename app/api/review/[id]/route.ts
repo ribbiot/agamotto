@@ -1,35 +1,30 @@
 import { type NextRequest } from 'next/server'
-import { createReviewContext } from '../../../../src/harness/context'
-import { runReview } from '../../../../src/agents/pr-review/coordinator'
 import {
   createReview,
-  completeReview,
-  failReview,
   getReview,
+  ReviewStatus,
 } from '../../../../src/memory/review-store'
-import {
-  markPrReviewFailed,
-  markPrReady,
-} from '../../../../src/memory/tracked-pr-store'
+import { markPrReviewFailed } from '../../../../src/memory/tracked-pr-store'
 import {
   getFreshGitHubToken,
   githubTokenFromFresh,
 } from '../../../../src/lib/github-auth'
 import { parsePrUrl } from '../../../../src/lib/queue'
-import { loadReviewSettings } from '../../../../src/lib/conventions-store'
 import {
   ReviewStreamKind,
   resolveReviewStream,
 } from '../../../../src/lib/review-stream'
 import { encodeSseEvent, tryEnqueueSse } from '../../../../src/lib/sse'
 import {
-  pipelineFailureErrorMessage,
   tokenBudgetErrorMessage,
-  tokenBudgetOverageFromError,
   tokenBudgetOverageFromMessage,
   tokenBudgetStats,
 } from '../../../../src/lib/review-run-stats'
 import { extrasFromReview } from '../../../../src/lib/review-sections'
+import {
+  executeReviewPipeline,
+  waitForInflightPipeline,
+} from '../../../../src/lib/execute-review-pipeline'
 
 // Must be a numeric literal — Next.js static analysis rejects CallExpressions.
 // Keep in sync with DEFAULT_TIMEOUT_MS / 1000 in src/lib/harness-limits.ts.
@@ -80,6 +75,24 @@ export async function GET(
         console.warn(`[review/${reviewId}] getReview check failed:`, err)
       }
 
+      if (existing?.status === ReviewStatus.RUNNING) {
+        const inflight = waitForInflightPipeline(reviewId)
+        if (inflight) {
+          await inflight
+          try {
+            existing = await getReview(reviewId)
+          } catch (err) {
+            console.warn(
+              `[review/${reviewId}] getReview after inflight failed:`,
+              err
+            )
+          }
+        }
+        // No inflight: this process did not start the run (restart, or the
+        // webhook worker died). Fall through to RUN and heal. Do not replay —
+        // RUNNING rows have no result yet.
+      }
+
       const decision = resolveReviewStream({
         queryPrUrl: prUrl,
         stored: existing
@@ -92,7 +105,7 @@ export async function GET(
       })
 
       if (decision.kind === ReviewStreamKind.ERROR) {
-        if (existing?.status === 'ERROR') {
+        if (existing?.status === ReviewStatus.ERROR) {
           const parsed = parsePrUrl(existing.pr_url)
           if (parsed) await markPrReviewFailed(parsed).catch(() => {})
         }
@@ -156,63 +169,16 @@ export async function GET(
         }
       }
 
-      const pipelineStarted = Date.now()
+      // Errors are emitted inside executeReviewPipeline (catch + SSE).
       try {
-        // Prefer the OAuth provider token from the user's GitHub session;
-        // falls back to GITHUB_TOKEN env var if not available.
         const githubToken = githubTokenFromFresh(await getFreshGitHubToken())
-        const context = createReviewContext(undefined, githubToken)
-        let conventionsDoc: string | undefined
-        let overlays = undefined
-        try {
-          const settings = await loadReviewSettings()
-          conventionsDoc = settings.conventionsDoc
-          overlays = settings.overlays
-        } catch (err) {
-          console.error(`[review/${reviewId}] loadReviewSettings failed:`, err)
-        }
-        const review = await runReview({
+        await executeReviewPipeline({
           reviewId,
           prUrl: runPrUrl,
           mode,
-          conventionsDoc,
-          overlays,
-          context,
+          githubToken,
           emit: send,
         })
-        try {
-          await completeReview(reviewId, review)
-          const parsed = parsePrUrl(runPrUrl)
-          if (parsed) {
-            await markPrReady(parsed, reviewId).catch(err =>
-              console.error(`[review/${reviewId}] markPrReady failed:`, err)
-            )
-          } else {
-            console.error(
-              `[review/${reviewId}] parsePrUrl returned null — skipping READY:`,
-              runPrUrl
-            )
-          }
-        } catch (err) {
-          console.error(`[review/${reviewId}] completeReview failed:`, err)
-        }
-      } catch (err) {
-        console.error(`[review/${reviewId}] runReview failed:`, err)
-        await failReview(reviewId, String(err)).catch(() => {})
-        const parsed = parsePrUrl(runPrUrl)
-        if (parsed) await markPrReviewFailed(parsed).catch(() => {})
-        const overage = tokenBudgetOverageFromError(err)
-        if (overage) {
-          send(
-            'stats',
-            tokenBudgetStats(overage, {
-              includeCost: true,
-              durationMs: Date.now() - pipelineStarted,
-            })
-          )
-        }
-        send('error', { error: pipelineFailureErrorMessage(err) })
-        send('done', { reviewId })
       } finally {
         controller.close()
       }

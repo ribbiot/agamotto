@@ -61,3 +61,17 @@ export function isAdminGithubUser(
   const login = githubLoginFromUser(user)
   return login !== undefined && parseGithubLogins(adminEnv).includes(login)
 }
+
+/**
+ * Sign-in / auto-start allowlist. Empty or unset ALLOWED_GITHUB_USERS means
+ * every GitHub login is allowed (local dev). Production should set the env.
+ */
+export function isAllowedGithubLogin(
+  login: string | null | undefined,
+  allowedEnv: string | undefined = process.env.ALLOWED_GITHUB_USERS
+): boolean {
+  const normalized = login?.trim().toLowerCase() ?? ''
+  if (!normalized) return false
+  const allowed = parseGithubLogins(allowedEnv)
+  return allowed.length === 0 || allowed.includes(normalized)
+}

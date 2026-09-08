@@ -134,7 +134,8 @@ export function createGithubTools(
  * Token priority:
  *   1. `token` argument — GitHub OAuth access token from the user's session
  *      (set when the user authenticates via GitHub OAuth in the web app).
- *   2. `GITHUB_TOKEN` env var — static PAT for CLI usage and local dev without OAuth.
+ *   2. `GITHUB_TOKEN` env var — static PAT for CLI, local dev without OAuth,
+ *      and webhook auto-start (ATH-58) which has no signed-in session.
  *
  * Returns null if no token is available; callers degrade gracefully (no GitHub tools).
  */

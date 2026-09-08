@@ -21,12 +21,18 @@ const mockGetGitHubToken = jest.fn()
 const mockGetFreshGitHubToken = jest.fn()
 const mockLoadReviewSettings = jest.fn()
 
-jest.mock('../src/memory/review-store', () => ({
-  getReview: (...args: unknown[]) => mockGetReview(...args),
-  createReview: (...args: unknown[]) => mockCreateReview(...args),
-  completeReview: (...args: unknown[]) => mockCompleteReview(...args),
-  failReview: (...args: unknown[]) => mockFailReview(...args),
-}))
+jest.mock('../src/memory/review-store', () => {
+  const actual = jest.requireActual(
+    '../src/memory/review-store'
+  ) as typeof import('../src/memory/review-store')
+  return {
+    ReviewStatus: actual.ReviewStatus,
+    getReview: (...args: unknown[]) => mockGetReview(...args),
+    createReview: (...args: unknown[]) => mockCreateReview(...args),
+    completeReview: (...args: unknown[]) => mockCompleteReview(...args),
+    failReview: (...args: unknown[]) => mockFailReview(...args),
+  }
+})
 
 jest.mock('../src/agents/pr-review/coordinator', () => ({
   runReview: (...args: unknown[]) => mockRunReview(...args),
@@ -288,6 +294,53 @@ describe('GET /api/review/[id] — live pipeline', () => {
 
     expect(mockCreateReview).not.toHaveBeenCalled()
     expect(mockRunReview).toHaveBeenCalled()
+  })
+
+  it('replays after waiting for an in-flight auto-start pipeline', async () => {
+    let release: (value: unknown) => void = () => {}
+    mockRunReview.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          release = resolve
+        })
+    )
+    mockGetReview
+      .mockResolvedValueOnce({
+        id: REVIEW_ID,
+        pr_url: PR_URL,
+        status: 'RUNNING',
+        result: null,
+      })
+      .mockResolvedValueOnce({
+        ...completeRow(),
+      })
+
+    const { executeReviewPipeline } =
+      await import('../src/lib/execute-review-pipeline')
+    const pipeline = executeReviewPipeline({
+      reviewId: REVIEW_ID,
+      prUrl: PR_URL,
+      mode: 'full',
+      githubToken: 'ghu_author',
+      emit: () => {},
+    })
+    for (let i = 0; i < 20 && mockRunReview.mock.calls.length === 0; i++) {
+      await Promise.resolve()
+    }
+
+    const streamPromise = getReviewStream(
+      `?prUrl=${encodeURIComponent(PR_URL)}`
+    )
+    release(COMPLETE_RESULT)
+    await pipeline
+    const { text } = await streamPromise
+
+    expect(mockRunReview).toHaveBeenCalledTimes(1)
+    expect(
+      eventsOfType(text, 'connected').some(
+        e => (e as { cached?: boolean }).cached === true
+      )
+    ).toBe(true)
   })
 
   it('emits an init error when createReview fails', async () => {

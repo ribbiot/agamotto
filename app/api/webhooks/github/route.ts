@@ -1,7 +1,12 @@
 import { type NextRequest, NextResponse } from 'next/server'
+import { AutoStartDecision } from '../../../../src/lib/auto-start'
+import { tryAutoStartOpenedReview } from '../../../../src/lib/auto-start-review'
 import { createSupabaseServiceRoleClient } from '../../../../src/lib/supabase/server'
+import {
+  SYNC_INVALIDATES_STATUSES,
+  TrackedPrStatus,
+} from '../../../../src/lib/tracked-prs'
 import { verifyGitHubSignature } from '../../../../src/lib/webhook'
-import { SYNC_INVALIDATES_STATUSES } from '../../../../src/lib/tracked-prs'
 
 // Used for constant-time dummy HMAC comparisons when no repo row is found or
 // the repo has no secret, so the latency profile of those paths is
@@ -39,7 +44,8 @@ interface GitHubPrPayload {
  * All 401 failure paths return identical bodies and perform the same HMAC work
  * to prevent both response-body and timing-based repo enumeration.
  *
- *   opened    → upsert (idempotent); initialises updated_since_review=false
+ *   opened    → upsert (idempotent); optional auto-start first review (ATH-58)
+ *               auto-start completes to READY and never posts to GitHub
  *   reopened  → update only; sets source=WEBHOOK, preserves updated_since_review
  *   closed    → update status=CLOSED, pr_closed_at, updated_since_review=false
  *   synchronize → flip REVIEWED|READY → OPEN and set updated_since_review=true
@@ -83,7 +89,7 @@ export async function POST(request: NextRequest) {
   // Return 401 (not 404) for unknown repos to prevent existence enumeration.
   const { data: configuredRepo, error: repoLookupError } = await service
     .from('configured_repos')
-    .select('id, webhook_secret')
+    .select('id, webhook_secret, auto_start')
     .eq('owner', owner)
     .eq('name', repo)
     .single()
@@ -137,8 +143,23 @@ export async function POST(request: NextRequest) {
   // ── Step 7: handle each action ────────────────────────────────────────────
 
   if (action === 'opened') {
+    let existingStatus: string | null = null
+    let lastReviewId: string | null = null
+    if (configuredRepo.auto_start === true) {
+      const { data: existing } = await service
+        .from('tracked_prs')
+        .select('status, last_review_id')
+        .eq('owner', owner)
+        .eq('repo', repo)
+        .eq('pr_number', prNumber)
+        .maybeSingle()
+      existingStatus = existing?.status ?? null
+      lastReviewId = existing?.last_review_id ?? null
+    }
+
     // Upsert so duplicate webhook deliveries are idempotent.
     // Explicitly initialise updated_since_review=false — no review exists yet.
+    // Do not clobber IN_REVIEW when auto-start already kicked the pipeline.
     const { error } = await service.from('tracked_prs').upsert(
       {
         owner,
@@ -149,9 +170,11 @@ export async function POST(request: NextRequest) {
         pr_author: prAuthor,
         pr_opened_at: prOpenedAt,
         pr_closed_at: null,
-        status: 'OPEN',
-        updated_since_review: false,
         source: 'WEBHOOK',
+        updated_since_review: false,
+        ...(existingStatus === TrackedPrStatus.IN_REVIEW
+          ? {}
+          : { status: TrackedPrStatus.OPEN }),
       },
       { onConflict: 'owner,repo,pr_number', ignoreDuplicates: false }
     )
@@ -163,7 +186,18 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       )
     }
-    return NextResponse.json({ ok: true, action })
+
+    let started: boolean | undefined
+    if (configuredRepo.auto_start === true) {
+      const decision = await tryAutoStartOpenedReview({
+        prUrl,
+        prAuthor,
+        existingStatus,
+        lastReviewId,
+      })
+      started = decision === AutoStartDecision.START
+    }
+    return NextResponse.json({ ok: true, action, started })
   }
 
   if (action === 'reopened') {

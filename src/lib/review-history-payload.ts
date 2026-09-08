@@ -4,11 +4,43 @@
  *
  * Finalize wraps the PRReview as `{ review, submission }`. A bare review
  * object (tests, store_review tool) is also accepted.
+ *
+ * `author` is the Agamotto operator who saved or posted — not the PR opener.
  */
+
+import type { ParsedPrUrl } from './queue'
+import type { PRMetadata } from '../memory/store'
+
+export const UNKNOWN_REVIEW_AUTHOR = 'unknown'
 
 export interface ReviewHistoryFields {
   summary: string
   findingCount: number
+}
+
+/** GitHub login of the signed-in operator, or `unknown` when there is no session. */
+export function reviewHistoryAuthor(
+  githubLogin: string | null | undefined
+): string {
+  const login = githubLogin?.trim().toLowerCase() ?? ''
+  return login.length > 0 ? login : UNKNOWN_REVIEW_AUTHOR
+}
+
+export function reviewHistoryMetadata(opts: {
+  prUrl: string
+  parsed: ParsedPrUrl | null
+  prTitle: string
+  githubLogin: string | null | undefined
+}): PRMetadata {
+  return {
+    prUrl: opts.prUrl,
+    repoName: opts.parsed
+      ? `${opts.parsed.owner}/${opts.parsed.repo}`
+      : 'unknown/unknown',
+    prTitle: opts.prTitle,
+    author: reviewHistoryAuthor(opts.githubLogin),
+    prNumber: opts.parsed?.pr_number ?? 0,
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

@@ -28,6 +28,8 @@ jest.mock('../src/memory/review-store', () => ({
 // ── Mock memory store (storeReview best-effort) ───────────────────────────────
 
 const mockStoreReview = jest.fn().mockResolvedValue(undefined)
+const mockGetUser = jest.fn()
+const mockCreateSupabaseServerClient = jest.fn()
 
 jest.mock('../src/memory/index', () => ({
   createMemoryStore: () => ({ storeReview: mockStoreReview }),
@@ -39,6 +41,8 @@ jest.mock('../src/lib/supabase/server', () => ({
   getGitHubToken: jest.fn().mockResolvedValue(null),
   GH_TOKEN_COOKIE: 'gh_provider_token',
   GH_REFRESH_COOKIE: 'gh_provider_refresh_token',
+  createSupabaseServerClient: (...args: unknown[]) =>
+    mockCreateSupabaseServerClient(...args),
 }))
 
 const mockGetFreshGitHubToken = jest.fn()
@@ -115,6 +119,13 @@ beforeEach(() => {
   mockMarkPrReviewed.mockResolvedValue(undefined)
   mockStoreReview.mockResolvedValue(undefined)
   mockCreateOctokit.mockReturnValue(null)
+  mockCreateSupabaseServerClient.mockResolvedValue({
+    auth: { getUser: mockGetUser },
+  })
+  mockGetUser.mockResolvedValue({
+    data: { user: { user_metadata: { user_name: 'Atharrison' } } },
+    error: null,
+  })
   mockGetFreshGitHubToken.mockResolvedValue({
     ok: false,
     error: 'NO_SESSION',
@@ -196,6 +207,10 @@ describe('POST /api/review/[id]/finalize — approve path', () => {
       }),
       REVIEW_ID
     )
+    expect(mockStoreReview).toHaveBeenCalledWith(
+      expect.objectContaining({ review: expect.anything() }),
+      expect.objectContaining({ author: 'atharrison' })
+    )
   })
 
   it('returns 500 when setReviewSubmission throws (approve path)', async () => {
@@ -226,6 +241,10 @@ describe('POST /api/review/[id]/finalize — submit path', () => {
         pr_number: 18,
       }),
       REVIEW_ID
+    )
+    expect(mockStoreReview).toHaveBeenCalledWith(
+      expect.objectContaining({ review: expect.anything() }),
+      expect.objectContaining({ author: 'atharrison' })
     )
   })
 
@@ -538,6 +557,86 @@ describe('POST /api/review/[id]/finalize — GitHub comment + tracked_prs edges'
           },
         ],
       })
+    )
+  })
+})
+
+describe('POST /api/review/[id]/finalize — review_history author', () => {
+  it('uses the signed-in GitHub login on save-without-posting', async () => {
+    mockGetReview.mockResolvedValue(makeCompleteReview(true))
+    mockSetReviewSubmission.mockResolvedValue(undefined)
+    await callFinalize(REVIEW_ID, {
+      decisions: [{ findingId: 'f1', action: 'ACCEPT' }],
+    })
+    expect(mockStoreReview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        author: 'atharrison',
+        repoName: 'atharrison/gauntlet-harness',
+        prNumber: 18,
+      })
+    )
+  })
+
+  it('uses the same login when posting to GitHub', async () => {
+    mockGetFreshGitHubToken.mockResolvedValue({
+      ok: true,
+      token: 'ghu_fresh',
+    })
+    mockCreateOctokit.mockReturnValue({
+      issues: { createComment: mockCreateComment },
+    })
+    mockCreateComment.mockResolvedValue({
+      data: { id: 99, html_url: 'https://github.com/comment/99' },
+    })
+    mockGetReview.mockResolvedValue(makeCompleteReview(true))
+    mockSetReviewSubmission.mockResolvedValue(undefined)
+    await callFinalize(REVIEW_ID, {
+      decisions: [{ findingId: 'f1', action: 'ACCEPT' }],
+      postComment: true,
+    })
+    expect(mockStoreReview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ author: 'atharrison' })
+    )
+  })
+
+  it('falls back to unknown when the session has no GitHub login', async () => {
+    mockGetUser.mockResolvedValue({
+      data: { user: { id: 'user-1' } },
+      error: null,
+    })
+    mockGetReview.mockResolvedValue(makeCompleteReview(false))
+    mockSetReviewSubmission.mockResolvedValue(undefined)
+    await callFinalize(REVIEW_ID, { approve: true, decisions: [] })
+    expect(mockStoreReview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ author: 'unknown' })
+    )
+  })
+
+  it('falls back to unknown when getUser returns an error', async () => {
+    mockGetUser.mockResolvedValue({
+      data: { user: null },
+      error: { message: 'invalid jwt' },
+    })
+    mockGetReview.mockResolvedValue(makeCompleteReview(false))
+    mockSetReviewSubmission.mockResolvedValue(undefined)
+    await callFinalize(REVIEW_ID, { approve: true, decisions: [] })
+    expect(mockStoreReview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ author: 'unknown' })
+    )
+  })
+
+  it('falls back to unknown when getUser throws', async () => {
+    mockCreateSupabaseServerClient.mockRejectedValue(new Error('no cookies'))
+    mockGetReview.mockResolvedValue(makeCompleteReview(false))
+    mockSetReviewSubmission.mockResolvedValue(undefined)
+    await callFinalize(REVIEW_ID, { approve: true, decisions: [] })
+    expect(mockStoreReview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ author: 'unknown' })
     )
   })
 })

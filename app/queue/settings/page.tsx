@@ -9,7 +9,7 @@ import {
 } from '../../../src/lib/conventions'
 import { isAdminGithubUser } from '../../../src/lib/github-users'
 import { overlaysFromRows } from '../../../src/lib/overlays'
-import ReposManager from './ReposManager'
+import { ReposManager } from './ReposManager'
 import { AgentGuidance } from './AgentGuidance'
 
 export const dynamic = 'force-dynamic'
@@ -58,8 +58,9 @@ export default async function QueueSettingsPage({ searchParams }: Props) {
         </h2>
         <p className="mb-4 text-sm text-gray-400">
           Repos registered for PR tracking. PRs are added automatically when a
-          webhook fires, or manually from the queue. History lists GitHub PRs
-          for these repos.
+          webhook fires, or manually from the queue. Auto-start runs the first
+          review when a PR is opened; it never posts to GitHub. History lists
+          GitHub PRs for these repos.
         </p>
         <ReposManager initialRepos={reposData ?? []} isAdmin={isAdmin} />
       </section>

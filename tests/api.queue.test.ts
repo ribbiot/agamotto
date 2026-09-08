@@ -488,6 +488,138 @@ describe('DELETE /api/queue/repos/[id]', () => {
   })
 })
 
+describe('PATCH /api/queue/repos/[id]', () => {
+  const originalAdmin = process.env.ADMIN_GITHUB_USERS
+
+  beforeEach(() => {
+    jest.resetModules()
+    process.env.ADMIN_GITHUB_USERS = 'devuser'
+  })
+
+  afterAll(() => {
+    if (originalAdmin === undefined) delete process.env.ADMIN_GITHUB_USERS
+    else process.env.ADMIN_GITHUB_USERS = originalAdmin
+  })
+
+  it('returns 401 when not authenticated', async () => {
+    mockAnonClient.current = makeSupabaseClient(null, {
+      data: null,
+      error: null,
+    })
+    const { PATCH } = await import('../app/api/queue/repos/[id]/route')
+    const req = makeRequest('http://localhost/api/queue/repos/r-1', {
+      method: 'PATCH',
+      body: { auto_start: true },
+    })
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'r-1' }) })
+    expect(res.status).toBe(401)
+  })
+
+  it('returns 403 when the caller is not an admin', async () => {
+    process.env.ADMIN_GITHUB_USERS = 'atharrison'
+    mockAnonClient.current = makeSupabaseClient(MOCK_USER, {
+      data: null,
+      error: null,
+    })
+    const { PATCH } = await import('../app/api/queue/repos/[id]/route')
+    const req = makeRequest('http://localhost/api/queue/repos/r-1', {
+      method: 'PATCH',
+      body: { auto_start: true },
+    })
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'r-1' }) })
+    expect(res.status).toBe(403)
+  })
+
+  it('returns 400 for invalid JSON', async () => {
+    mockAnonClient.current = makeSupabaseClient(MOCK_USER, {
+      data: null,
+      error: null,
+    })
+    const { PATCH } = await import('../app/api/queue/repos/[id]/route')
+    const req = new NextRequest('http://localhost/api/queue/repos/r-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not-json',
+    })
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'r-1' }) })
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 422 when auto_start is missing', async () => {
+    mockAnonClient.current = makeSupabaseClient(MOCK_USER, {
+      data: null,
+      error: null,
+    })
+    const { PATCH } = await import('../app/api/queue/repos/[id]/route')
+    const req = makeRequest('http://localhost/api/queue/repos/r-1', {
+      method: 'PATCH',
+      body: {},
+    })
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'r-1' }) })
+    expect(res.status).toBe(422)
+  })
+
+  it('updates auto_start and returns the repo', async () => {
+    mockAnonClient.current = makeSupabaseClient(MOCK_USER, {
+      data: null,
+      error: null,
+    })
+    mockServiceClient.current = makeChain({
+      data: [{ id: 'r-1', auto_start: true }],
+      error: null,
+    })
+    const { PATCH } = await import('../app/api/queue/repos/[id]/route')
+    const req = makeRequest('http://localhost/api/queue/repos/r-1', {
+      method: 'PATCH',
+      body: { auto_start: true },
+    })
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'r-1' }) })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      repo: { id: 'r-1', auto_start: true },
+    })
+    expect(mockServiceClient.current.update).toHaveBeenCalledWith({
+      auto_start: true,
+    })
+    expect(mockServiceClient.current.select).toHaveBeenCalledWith(
+      'id, owner, name, active, auto_start, created_at, updated_at'
+    )
+  })
+
+  it('returns 404 when the repo does not exist', async () => {
+    mockAnonClient.current = makeSupabaseClient(MOCK_USER, {
+      data: null,
+      error: null,
+    })
+    mockServiceClient.current = makeChain({ data: [], error: null })
+    const { PATCH } = await import('../app/api/queue/repos/[id]/route')
+    const req = makeRequest('http://localhost/api/queue/repos/r-1', {
+      method: 'PATCH',
+      body: { auto_start: false },
+    })
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'r-1' }) })
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 500 when the update fails', async () => {
+    mockAnonClient.current = makeSupabaseClient(MOCK_USER, {
+      data: null,
+      error: null,
+    })
+    mockServiceClient.current = makeChain({
+      data: null,
+      error: { message: 'db' },
+    })
+    const { PATCH } = await import('../app/api/queue/repos/[id]/route')
+    const req = makeRequest('http://localhost/api/queue/repos/r-1', {
+      method: 'PATCH',
+      body: { auto_start: true },
+    })
+    const res = await PATCH(req, { params: Promise.resolve({ id: 'r-1' }) })
+    expect(res.status).toBe(500)
+  })
+})
+
 // ── GET /api/queue/repos ───────────────────────────────────────────────────────
 
 describe('GET /api/queue/repos', () => {

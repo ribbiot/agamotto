@@ -12,6 +12,7 @@ export type Database = {
       configured_repos: {
         Row: {
           active: boolean
+          auto_start: boolean
           created_at: string
           id: string
           name: string
@@ -21,6 +22,7 @@ export type Database = {
         }
         Insert: {
           active?: boolean
+          auto_start?: boolean
           created_at?: string
           id?: string
           name: string
@@ -30,6 +32,7 @@ export type Database = {
         }
         Update: {
           active?: boolean
+          auto_start?: boolean
           created_at?: string
           id?: string
           name?: string

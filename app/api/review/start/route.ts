@@ -1,10 +1,8 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { v4 as uuidv4 } from 'uuid'
 import { z } from 'zod'
-import { parsePrUrl } from '../../../../src/lib/queue'
 import { createSupabaseServerClient } from '../../../../src/lib/supabase/server'
-import { createReview } from '../../../../src/memory/review-store'
-import { markPrInReview } from '../../../../src/memory/tracked-pr-store'
+import { beginTrackedReview } from '../../../../src/memory/begin-tracked-review'
 
 const StartReviewBody = z.object({
   prUrl: z.string().url('prUrl must be a valid GitHub PR URL'),
@@ -52,33 +50,6 @@ async function hasGitHubSession(): Promise<boolean> {
   } catch (err) {
     console.error('[POST /api/review/start] getUser failed:', err)
     return false
-  }
-}
-
-/**
- * Mint a review row (for last_review_id FK) and upsert the queue row to
- * IN_REVIEW. Both writes are best-effort so a queue/DB blip cannot block
- * starting a review — the SSE route will create the reviews row if missing.
- */
-async function beginTrackedReview(
-  reviewId: string,
-  prUrl: string,
-  mode: 'full' | 'quick'
-): Promise<void> {
-  let reviewRowCreated = false
-  try {
-    await createReview(reviewId, prUrl, mode)
-    reviewRowCreated = true
-  } catch (err) {
-    console.error('[start] createReview failed:', err)
-  }
-
-  const prParsed = parsePrUrl(prUrl)
-  if (!prParsed) return
-  try {
-    await markPrInReview(prParsed, reviewRowCreated ? reviewId : null)
-  } catch (err) {
-    console.error('[start] tracked_prs IN_REVIEW upsert failed:', err)
   }
 }
 

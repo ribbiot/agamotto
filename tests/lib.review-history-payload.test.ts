@@ -1,4 +1,10 @@
-import { reviewHistoryFields } from '../src/lib/review-history-payload'
+import {
+  reviewHistoryAuthor,
+  reviewHistoryFields,
+  reviewHistoryMetadata,
+  UNKNOWN_REVIEW_AUTHOR,
+} from '../src/lib/review-history-payload'
+import { parsePrUrl } from '../src/lib/queue'
 
 describe('reviewHistoryFields', () => {
   it('reads summary and findings[] from a bare review object', () => {
@@ -62,5 +68,53 @@ describe('reviewHistoryFields', () => {
         blockingIssues: [{ id: 'b' }, { id: 'c' }],
       })
     ).toEqual({ summary: 'mixed', findingCount: 1 })
+  })
+})
+
+describe('reviewHistoryAuthor', () => {
+  it('normalizes a GitHub login and falls back to unknown', () => {
+    expect(reviewHistoryAuthor('Atharrison')).toBe('atharrison')
+    expect(reviewHistoryAuthor('  Bob  ')).toBe('bob')
+    expect(reviewHistoryAuthor(null)).toBe(UNKNOWN_REVIEW_AUTHOR)
+    expect(reviewHistoryAuthor(undefined)).toBe(UNKNOWN_REVIEW_AUTHOR)
+    expect(reviewHistoryAuthor('')).toBe(UNKNOWN_REVIEW_AUTHOR)
+    expect(reviewHistoryAuthor('   ')).toBe(UNKNOWN_REVIEW_AUTHOR)
+  })
+})
+
+describe('reviewHistoryMetadata', () => {
+  it('fills repo fields from a parsed PR URL', () => {
+    const parsed = parsePrUrl('https://github.com/acme/app/pull/42')
+    expect(
+      reviewHistoryMetadata({
+        prUrl: 'https://github.com/acme/app/pull/42',
+        parsed,
+        prTitle: 'Fix leak',
+        githubLogin: 'Dev',
+      })
+    ).toEqual({
+      prUrl: 'https://github.com/acme/app/pull/42',
+      repoName: 'acme/app',
+      prTitle: 'Fix leak',
+      author: 'dev',
+      prNumber: 42,
+    })
+  })
+
+  it('uses placeholder repo fields when the URL cannot be parsed', () => {
+    expect(
+      reviewHistoryMetadata({
+        prUrl: 'not-a-pr',
+        parsed: null,
+        prTitle: 'Untitled',
+        githubLogin: null,
+      })
+    ).toEqual({
+      prUrl: 'not-a-pr',
+      repoName: 'unknown/unknown',
+      prTitle: 'Untitled',
+      author: UNKNOWN_REVIEW_AUTHOR,
+      prNumber: 0,
+    })
   })
 })

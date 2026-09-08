@@ -36,6 +36,7 @@ function makeChain(result: { data: unknown; error: unknown }) {
     chain[m] = jest.fn().mockReturnValue(chain)
   }
   chain.single = jest.fn().mockResolvedValue(result)
+  chain.maybeSingle = jest.fn().mockResolvedValue(result)
   chain.then = (resolve: (v: unknown) => unknown) =>
     Promise.resolve(result).then(resolve)
   return chain
@@ -53,15 +54,28 @@ jest.mock('../src/lib/supabase/server', () => ({
   GH_TOKEN_COOKIE: 'gh_provider_token',
 }))
 
+const mockTryAutoStart = jest.fn()
+
+jest.mock('../src/lib/auto-start-review', () => ({
+  tryAutoStartOpenedReview: (...args: unknown[]) => mockTryAutoStart(...args),
+}))
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 const WEBHOOK_SECRET = 'test-webhook-secret'
 const OWNER = 'acme'
 const REPO = 'my-app'
 
-function makeConfiguredRepo(webhookSecret: string | null = WEBHOOK_SECRET) {
+function makeConfiguredRepo(
+  webhookSecret: string | null = WEBHOOK_SECRET,
+  autoStart = false
+) {
   return makeChain({
-    data: { id: 'repo-uuid', webhook_secret: webhookSecret },
+    data: {
+      id: 'repo-uuid',
+      webhook_secret: webhookSecret,
+      auto_start: autoStart,
+    },
     error: null,
   })
 }
@@ -130,6 +144,7 @@ describe('POST /api/webhooks/github', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    mockTryAutoStart.mockResolvedValue('SKIP_DISABLED')
     // Default: mockServiceFromFn is a fresh jest.fn; tests override per-call
     mockServiceFromFn = jest.fn()
   })
@@ -424,6 +439,7 @@ describe('POST /api/webhooks/github', () => {
       }),
       expect.objectContaining({ onConflict: 'owner,repo,pr_number' })
     )
+    expect(mockTryAutoStart).not.toHaveBeenCalled()
   })
 
   it('uses update (not upsert) for reopened, preserving updated_since_review and source', async () => {
@@ -476,6 +492,87 @@ describe('POST /api/webhooks/github', () => {
     const req = makeRequest(body)
     const res = await POST(req)
     expect(res.status).toBe(500)
+  })
+
+  it('does not auto-start when the repo flag is off', async () => {
+    const repoChain = makeConfiguredRepo(WEBHOOK_SECRET, false)
+    const prsChain = makeTrackedPrsChain()
+    mockServiceFromFn
+      .mockReturnValueOnce(repoChain)
+      .mockReturnValueOnce(prsChain)
+
+    const body = buildPayload('opened')
+    const res = await POST(makeRequest(body))
+    expect(res.status).toBe(200)
+    expect(mockTryAutoStart).not.toHaveBeenCalled()
+    expect(await res.json()).toEqual({
+      ok: true,
+      action: 'opened',
+    })
+  })
+
+  it('auto-starts the first opened review when the repo flag is on', async () => {
+    mockTryAutoStart.mockResolvedValue('START')
+    const repoChain = makeConfiguredRepo(WEBHOOK_SECRET, true)
+    const existingChain = makeChain({ data: null, error: null })
+    const prsChain = makeTrackedPrsChain()
+    mockServiceFromFn
+      .mockReturnValueOnce(repoChain)
+      .mockReturnValueOnce(existingChain)
+      .mockReturnValueOnce(prsChain)
+
+    const body = buildPayload('opened')
+    const res = await POST(makeRequest(body))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      ok: true,
+      action: 'opened',
+      started: true,
+    })
+    expect(mockTryAutoStart).toHaveBeenCalledWith({
+      prUrl: `https://github.com/${OWNER}/${REPO}/pull/42`,
+      prAuthor: 'dev',
+      existingStatus: null,
+      lastReviewId: null,
+    })
+    expect(existingChain.maybeSingle).toHaveBeenCalled()
+  })
+
+  it('does not clobber IN_REVIEW on a duplicate opened delivery', async () => {
+    mockTryAutoStart.mockResolvedValue('SKIP_IN_REVIEW')
+    const repoChain = makeConfiguredRepo(WEBHOOK_SECRET, true)
+    const existingChain = makeChain({
+      data: { status: 'IN_REVIEW', last_review_id: 'rev-1' },
+      error: null,
+    })
+    const prsChain = makeTrackedPrsChain()
+    mockServiceFromFn
+      .mockReturnValueOnce(repoChain)
+      .mockReturnValueOnce(existingChain)
+      .mockReturnValueOnce(prsChain)
+
+    const res = await POST(makeRequest(buildPayload('opened')))
+    expect(res.status).toBe(200)
+    const upsertArg = (prsChain.upsert as jest.Mock).mock.calls[0][0]
+    expect(upsertArg.status).toBeUndefined()
+    expect(mockTryAutoStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        existingStatus: 'IN_REVIEW',
+        lastReviewId: 'rev-1',
+      })
+    )
+  })
+
+  it('does not auto-start on reopened or synchronize', async () => {
+    const repoChain = makeConfiguredRepo(WEBHOOK_SECRET, true)
+    const prsChain = makeTrackedPrsChain()
+    mockServiceFromFn
+      .mockReturnValueOnce(repoChain)
+      .mockReturnValueOnce(prsChain)
+
+    const res = await POST(makeRequest(buildPayload('reopened')))
+    expect(res.status).toBe(200)
+    expect(mockTryAutoStart).not.toHaveBeenCalled()
   })
 
   // ── closed ────────────────────────────────────────────────────────────────
