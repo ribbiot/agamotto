@@ -10,7 +10,10 @@
  */
 
 import { NextRequest } from 'next/server'
-import { buildSubmission } from '../src/agents/pr-review/approval'
+import {
+  buildSubmission,
+  formatGitHubComment,
+} from '../src/agents/pr-review/approval'
 
 // ── Mock review-store ─────────────────────────────────────────────────────────
 
@@ -506,5 +509,35 @@ describe('POST /api/review/[id]/finalize — GitHub comment + tracked_prs edges'
       postComment: true,
     })
     expect(buildSubmission).toHaveBeenCalledWith(expect.anything(), true)
+  })
+
+  it('passes section decisions into formatGitHubComment', async () => {
+    mockGetReview.mockResolvedValue(makeCompleteReview(true))
+    mockSetReviewSubmission.mockResolvedValue(undefined)
+    await callFinalize(REVIEW_ID, {
+      decisions: [{ findingId: 'f1', action: 'ACCEPT' }],
+      postComment: true,
+      sections: [
+        { section: 'PREAMBLE', action: 'REJECT' },
+        {
+          section: 'WHAT_LOOKS_GOOD',
+          action: 'EDIT',
+          editedBody: 'Nice tests',
+        },
+      ],
+    })
+    expect(formatGitHubComment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        sections: [
+          { section: 'PREAMBLE', action: 'REJECT' },
+          {
+            section: 'WHAT_LOOKS_GOOD',
+            action: 'EDIT',
+            editedBody: 'Nice tests',
+          },
+        ],
+      })
+    )
   })
 })

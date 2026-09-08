@@ -14,6 +14,15 @@ import type {
   PRReview,
   ReviewSubmission,
 } from '../agents/pr-review/schema'
+import {
+  ReviewSection,
+  hydrateSectionUi,
+  sectionDecisionsFromUi,
+  type ReviewCommentExtras,
+  type UiSectionDecision,
+} from './review-sections'
+
+export type { ReviewCommentExtras, UiSectionDecision }
 
 const KNOWN_CATEGORIES: ReadonlySet<Finding['category']> = new Set(
   FINDING_CATEGORIES
@@ -37,14 +46,6 @@ export type UiFindingDecision = {
   accepted: boolean
   editedTitle?: string
   editedBody?: string
-}
-
-export type ReviewCommentExtras = {
-  summary?: string
-  verdict?: PRReview['verdict']
-  verdictSummary?: string
-  whatLooksGood?: string[]
-  testingRecommendations?: string[]
 }
 
 export function findingReviewAction(decision: {
@@ -112,6 +113,7 @@ export function formatReviewCommentFromUi(opts: {
   findings: UiFinding[]
   decisions: Record<string, UiFindingDecision>
   extras?: ReviewCommentExtras
+  sections?: Record<ReviewSection, UiSectionDecision>
 }): string {
   const findings = opts.findings.map(toFinding)
   const extras = opts.extras ?? {}
@@ -120,20 +122,24 @@ export function formatReviewCommentFromUi(opts: {
     prUrl: '',
     summary: extras.summary ?? '',
     fileCoverage: [],
-    ticketAlignment: [],
+    ticketAlignment: extras.ticketAlignment ?? [],
     whatLooksGood: extras.whatLooksGood ?? [],
     blockingIssues: findings.filter(f => f.severity === 'BLOCKING'),
     suggestions: findings.filter(f => f.severity === 'SUGGESTION'),
     nits: findings.filter(f => f.severity === 'NIT'),
-    questions: [],
+    questions: extras.questions ?? [],
     testingRecommendations: extras.testingRecommendations ?? [],
     verdict: extras.verdict ?? deriveVerdict(findings, opts.decisions),
     verdictSummary: extras.verdictSummary ?? '',
     confidence: 1,
   }
+  const sectionDecisions = sectionDecisionsFromUi({
+    ...hydrateSectionUi(extras),
+    ...opts.sections,
+  })
 
   if (findings.length === 0) {
-    return formatApprovalComment(review)
+    return formatApprovalComment(review, sectionDecisions)
   }
 
   const submission: ReviewSubmission = {
@@ -152,6 +158,7 @@ export function formatReviewCommentFromUi(opts: {
         editedBody: d?.editedBody,
       }
     }),
+    sections: sectionDecisions,
   }
 
   return formatGitHubComment(review, submission)

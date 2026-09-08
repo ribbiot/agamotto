@@ -1,9 +1,19 @@
 import { AGAMOTTO_REVIEW_FOOTER } from '../../lib/github-conversation'
+import { formatConfidencePercent } from '../../lib/confidence-bar'
+import {
+  ReviewSection,
+  defaultAlignmentText,
+  defaultListText,
+  defaultPreambleText,
+  listItemsFromText,
+  resolveSection,
+} from '../../lib/review-sections'
 import type {
   PRReview,
   Finding,
   FindingDecision,
   ReviewSubmission,
+  SectionDecision,
 } from './schema'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -103,11 +113,13 @@ export function editFinding(
  */
 export function buildSubmission(
   state: ApprovalState,
-  postToGitHub: boolean
+  postToGitHub: boolean,
+  sections?: SectionDecision[]
 ): ReviewSubmission {
   return {
     reviewId: state.reviewId,
     decisions: Object.values(state.decisions),
+    ...(sections && sections.length > 0 ? { sections } : {}),
     postToGitHub,
   }
 }
@@ -160,6 +172,27 @@ export function summariseDecisions(
   }
 }
 
+function appendListSection(
+  lines: string[],
+  heading: string,
+  resolved: { included: boolean; text: string }
+): void {
+  if (!resolved.included) return
+  const items = listItemsFromText(resolved.text)
+  if (items.length === 0) return
+  lines.push(heading)
+  items.forEach(item => lines.push(`- ${item}`))
+  lines.push('')
+}
+
+function formatFindingHeading(
+  title: string,
+  finding: Pick<Finding, 'file' | 'line' | 'confidence'>
+): string {
+  const loc = `${finding.file}${finding.line ? `:${finding.line}` : ''}`
+  return `\n**${title}** (\`${loc}\`, ${formatConfidencePercent(finding.confidence)} confidence)`
+}
+
 /**
  * Format a ReviewSubmission into a GitHub-ready markdown comment body.
  * Used by the finalize route when postToGitHub=true.
@@ -175,15 +208,26 @@ export function formatGitHubComment(
     ...review.nits,
   ]
   const byId = new Map<string, Finding>(allFindings.map(f => [f.id, f]))
+  const sections = submission.sections
+  const preamble = resolveSection(
+    ReviewSection.PREAMBLE,
+    defaultPreambleText(review),
+    sections
+  )
 
-  const lines: string[] = [
-    `## AI PR Review — ${review.verdict}`,
-    '',
-    review.verdictSummary,
-    '',
-    review.summary,
-    '',
-  ]
+  const lines: string[] = [`## AI PR Review — ${review.verdict}`, '']
+  if (preamble.included && preamble.text) {
+    lines.push(preamble.text, '')
+  }
+  appendListSection(
+    lines,
+    '### Acceptance Criteria alignment',
+    resolveSection(
+      ReviewSection.TICKET_ALIGNMENT,
+      defaultAlignmentText(review.ticketAlignment),
+      sections
+    )
+  )
 
   if (review.blockingIssues.length > 0) {
     lines.push('### 🔴 Blocking Issues')
@@ -192,7 +236,7 @@ export function formatGitHubComment(
       if (!f || f.severity !== 'BLOCKING') continue
       const title = d.editedTitle ?? f.title
       const body = d.editedBody ?? f.body
-      lines.push(`\n**${title}** (\`${f.file}${f.line ? `:${f.line}` : ''}\`)`)
+      lines.push(formatFindingHeading(title, f))
       lines.push(body)
       if (f.suggestedFix) lines.push(`\n> Suggested fix: ${f.suggestedFix}`)
     }
@@ -206,7 +250,7 @@ export function formatGitHubComment(
       if (!f || f.severity !== 'SUGGESTION') continue
       const title = d.editedTitle ?? f.title
       const body = d.editedBody ?? f.body
-      lines.push(`\n**${title}** (\`${f.file}${f.line ? `:${f.line}` : ''}\`)`)
+      lines.push(formatFindingHeading(title, f))
       lines.push(body)
     }
     lines.push('')
@@ -222,24 +266,40 @@ export function formatGitHubComment(
       const f = byId.get(d.findingId)!
       const title = d.editedTitle ?? f.title
       const body = d.editedBody ?? f.body
-      lines.push(`\n**${title}** (\`${f.file}${f.line ? `:${f.line}` : ''}\`)`)
+      lines.push(formatFindingHeading(title, f))
       lines.push(body)
       if (f.suggestedFix) lines.push(`\n> Suggested fix: ${f.suggestedFix}`)
     }
     lines.push('')
   }
 
-  if (review.whatLooksGood.length > 0) {
-    lines.push('### ✅ What Looks Good')
-    review.whatLooksGood.forEach(w => lines.push(`- ${w}`))
-    lines.push('')
-  }
-
-  if (review.testingRecommendations.length > 0) {
-    lines.push('### 🧪 Testing Recommendations')
-    review.testingRecommendations.forEach(t => lines.push(`- ${t}`))
-    lines.push('')
-  }
+  appendListSection(
+    lines,
+    '### ✅ What Looks Good',
+    resolveSection(
+      ReviewSection.WHAT_LOOKS_GOOD,
+      defaultListText(review.whatLooksGood),
+      sections
+    )
+  )
+  appendListSection(
+    lines,
+    '### Questions',
+    resolveSection(
+      ReviewSection.QUESTIONS,
+      defaultListText(review.questions),
+      sections
+    )
+  )
+  appendListSection(
+    lines,
+    '### 🧪 Testing Recommendations',
+    resolveSection(
+      ReviewSection.TESTING_RECOMMENDATIONS,
+      defaultListText(review.testingRecommendations),
+      sections
+    )
+  )
 
   lines.push('---')
   lines.push(AGAMOTTO_REVIEW_FOOTER)
@@ -250,7 +310,15 @@ export function formatGitHubComment(
 /**
  * Format a clean LGTM approval comment for a PR that had no findings.
  */
-export function formatApprovalComment(review: PRReview): string {
+export function formatApprovalComment(
+  review: PRReview,
+  sections?: SectionDecision[]
+): string {
+  const preamble = resolveSection(
+    ReviewSection.PREAMBLE,
+    defaultPreambleText(review),
+    sections
+  )
   const lines: string[] = []
   lines.push('## AI PR Review — APPROVED ✅')
   lines.push('')
@@ -259,16 +327,47 @@ export function formatApprovalComment(review: PRReview): string {
   )
   lines.push('')
 
-  if (review.summary) {
-    lines.push(`> ${review.summary}`)
+  if (preamble.included && preamble.text) {
+    lines.push(preamble.text)
     lines.push('')
   }
+  appendListSection(
+    lines,
+    '### Acceptance Criteria alignment',
+    resolveSection(
+      ReviewSection.TICKET_ALIGNMENT,
+      defaultAlignmentText(review.ticketAlignment),
+      sections
+    )
+  )
 
-  if (review.whatLooksGood.length > 0) {
-    lines.push('### ✅ What Looks Good')
-    review.whatLooksGood.forEach(w => lines.push(`- ${w}`))
-    lines.push('')
-  }
+  appendListSection(
+    lines,
+    '### ✅ What Looks Good',
+    resolveSection(
+      ReviewSection.WHAT_LOOKS_GOOD,
+      defaultListText(review.whatLooksGood),
+      sections
+    )
+  )
+  appendListSection(
+    lines,
+    '### Questions',
+    resolveSection(
+      ReviewSection.QUESTIONS,
+      defaultListText(review.questions),
+      sections
+    )
+  )
+  appendListSection(
+    lines,
+    '### 🧪 Testing Recommendations',
+    resolveSection(
+      ReviewSection.TESTING_RECOMMENDATIONS,
+      defaultListText(review.testingRecommendations),
+      sections
+    )
+  )
 
   lines.push('---')
   lines.push(AGAMOTTO_REVIEW_FOOTER)

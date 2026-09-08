@@ -72,6 +72,40 @@ describe('storedReviewUiState', () => {
     expect(state!.postedToGitHub).toBe(false)
   })
 
+  it('hydrates comment extras and section Include state', () => {
+    const state = storedReviewUiState(
+      {
+        summary: 'Good PR',
+        verdictSummary: 'Ship after nits.',
+        whatLooksGood: ['Clear names'],
+        testingRecommendations: ['Run npm test'],
+        questions: ['Why this approach?'],
+        ticketAlignment: [{ requirement: 'Save without posting', met: true }],
+      },
+      {
+        sections: [
+          { section: 'PREAMBLE', action: 'REJECT' },
+          {
+            section: 'WHAT_LOOKS_GOOD',
+            action: 'EDIT',
+            editedBody: 'Nice tests',
+          },
+        ],
+      }
+    )
+    expect(state!.extras.summary).toBe('Good PR')
+    expect(state!.sections.PREAMBLE.accepted).toBe(false)
+    expect(state!.sections.WHAT_LOOKS_GOOD).toEqual({
+      section: 'WHAT_LOOKS_GOOD',
+      accepted: true,
+      editedBody: 'Nice tests',
+    })
+    expect(state!.sections.TESTING_RECOMMENDATIONS.accepted).toBe(true)
+    expect(state!.sections.QUESTIONS.accepted).toBe(true)
+    expect(state!.sections.TICKET_ALIGNMENT.accepted).toBe(true)
+    expect(state!.extras.questions).toEqual(['Why this approach?'])
+  })
+
   it('overlays Include toggles from a saved submission', () => {
     const state = storedReviewUiState(
       {

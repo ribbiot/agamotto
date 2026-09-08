@@ -8,6 +8,7 @@ import {
   formatReviewCommentFromUi,
 } from '../src/lib/review-comment-copy'
 import type { Finding } from '../src/agents/pr-review/schema'
+import { ReviewSection, hydrateSectionUi } from '../src/lib/review-sections'
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -120,6 +121,7 @@ describe('formatReviewCommentFromUi', () => {
     })
     expect(markdown).toContain('Null deref')
     expect(markdown).toContain('src/foo.ts:12')
+    expect(markdown).toContain('80% confidence')
     expect(markdown).not.toContain('Skip me')
   })
 
@@ -182,6 +184,8 @@ describe('formatReviewCommentFromUi', () => {
         verdictSummary: 'A few nits',
         whatLooksGood: ['Tests'],
         testingRecommendations: ['Run npm test'],
+        questions: ['Why this approach?'],
+        ticketAlignment: [{ requirement: 'Save without posting', met: true }],
       },
     })
     expect(markdown).toContain('## AI PR Review — COMMENT')
@@ -189,6 +193,43 @@ describe('formatReviewCommentFromUi', () => {
     expect(markdown).toContain('A few nits')
     expect(markdown).toContain('Tests')
     expect(markdown).toContain('Run npm test')
+    expect(markdown).toContain('Why this approach?')
+    expect(markdown).toContain('Save without posting')
+  })
+
+  it('omits excluded extras sections from the copied comment', () => {
+    const extras = {
+      summary: 'Overall good',
+      verdict: 'COMMENT' as const,
+      whatLooksGood: ['Tests'],
+      testingRecommendations: ['Run npm test'],
+    }
+    const markdown = formatReviewCommentFromUi({
+      reviewId: 'rev-1',
+      findings: [finding({ id: 's1' })],
+      decisions: { s1: { findingId: 's1', accepted: true } },
+      extras,
+      sections: {
+        ...hydrateSectionUi(extras),
+        [ReviewSection.PREAMBLE]: {
+          section: ReviewSection.PREAMBLE,
+          accepted: false,
+        },
+        [ReviewSection.WHAT_LOOKS_GOOD]: {
+          section: ReviewSection.WHAT_LOOKS_GOOD,
+          accepted: false,
+        },
+        [ReviewSection.TESTING_RECOMMENDATIONS]: {
+          section: ReviewSection.TESTING_RECOMMENDATIONS,
+          accepted: true,
+          editedBody: 'Hit /health',
+        },
+      },
+    })
+    expect(markdown).not.toContain('Overall good')
+    expect(markdown).not.toContain('Tests')
+    expect(markdown).toContain('Hit /health')
+    expect(markdown).not.toContain('Run npm test')
   })
 
   it('derives REQUEST_CHANGES when an accepted blocking has no stored verdict', () => {

@@ -5,6 +5,8 @@ import {
   DomainResultSchema,
   PRReviewSchema,
   CheckpointRecordSchema,
+  ReviewSubmissionSchema,
+  ReviewSection,
 } from '../src/agents/pr-review/schema'
 import {
   GithubCommentKind,
@@ -264,6 +266,38 @@ describe('PRReviewSchema', () => {
     expect(
       PRReviewSchema.safeParse({ ...valid, verdict: 'MERGE' }).success
     ).toBe(false)
+  })
+})
+
+describe('ReviewSubmissionSchema', () => {
+  it('parses without sections for pre-ATH-29 submissions', () => {
+    expect(
+      ReviewSubmissionSchema.safeParse({
+        reviewId: 'rev-001',
+        decisions: [{ findingId: 'f1', action: 'ACCEPT' }],
+        postToGitHub: false,
+      }).success
+    ).toBe(true)
+  })
+
+  it('parses section decisions', () => {
+    expect(
+      ReviewSubmissionSchema.safeParse({
+        reviewId: 'rev-001',
+        decisions: [],
+        postToGitHub: false,
+        sections: [
+          { section: ReviewSection.PREAMBLE, action: 'REJECT' },
+          {
+            section: ReviewSection.WHAT_LOOKS_GOOD,
+            action: 'EDIT',
+            editedBody: 'Nice tests',
+          },
+          { section: ReviewSection.QUESTIONS, action: 'ACCEPT' },
+          { section: ReviewSection.TICKET_ALIGNMENT, action: 'REJECT' },
+        ],
+      }).success
+    ).toBe(true)
   })
 })
 

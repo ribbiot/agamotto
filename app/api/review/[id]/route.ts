@@ -29,6 +29,7 @@ import {
   tokenBudgetOverageFromMessage,
   tokenBudgetStats,
 } from '../../../../src/lib/review-run-stats'
+import { extrasFromReview } from '../../../../src/lib/review-sections'
 
 // Must be a numeric literal — Next.js static analysis rejects CallExpressions.
 // Keep in sync with DEFAULT_TIMEOUT_MS / 1000 in src/lib/harness-limits.ts.
@@ -45,7 +46,7 @@ export const maxDuration = 300
  *   alarm       { alarm }
  *   stats       { tokensUsed, estimatedCostUsd, durationMs, findingsCount, phaseDurations }
  *   error       { error: string }
- *   done        { reviewId }
+ *   done        { reviewId, extras? }
  */
 export async function GET(
   request: NextRequest,
@@ -130,7 +131,7 @@ export async function GET(
         for (const finding of allFindings) {
           send('finding', { finding })
         }
-        send('done', { reviewId })
+        send('done', { reviewId, extras: extrasFromReview(review) })
         controller.close()
         return
       }

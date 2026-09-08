@@ -192,12 +192,38 @@ export const FindingDecisionSchema = z.object({
 })
 export type FindingDecision = z.infer<typeof FindingDecisionSchema>
 
+/** Non-finding blocks on the posted GitHub comment (ATH-29). */
+export enum ReviewSection {
+  PREAMBLE = 'PREAMBLE',
+  TICKET_ALIGNMENT = 'TICKET_ALIGNMENT',
+  WHAT_LOOKS_GOOD = 'WHAT_LOOKS_GOOD',
+  QUESTIONS = 'QUESTIONS',
+  TESTING_RECOMMENDATIONS = 'TESTING_RECOMMENDATIONS',
+}
+
+export const ReviewSectionSchema = z.enum([
+  ReviewSection.PREAMBLE,
+  ReviewSection.TICKET_ALIGNMENT,
+  ReviewSection.WHAT_LOOKS_GOOD,
+  ReviewSection.QUESTIONS,
+  ReviewSection.TESTING_RECOMMENDATIONS,
+])
+
+export const SectionDecisionSchema = z.object({
+  section: ReviewSectionSchema,
+  action: z.enum(['ACCEPT', 'REJECT', 'EDIT']),
+  editedBody: z.string().optional(),
+})
+export type SectionDecision = z.infer<typeof SectionDecisionSchema>
+
 // ── ReviewSubmission ──────────────────────────────────────────────────────────
 // Full approval loop output — decisions + whether the GitHub comment landed.
 
 export const ReviewSubmissionSchema = z.object({
   reviewId: z.string(),
   decisions: z.array(FindingDecisionSchema),
+  /** Absent on submissions stored before ATH-29. */
+  sections: z.array(SectionDecisionSchema).optional(),
   postToGitHub: z.boolean(),
 })
 export type ReviewSubmission = z.infer<typeof ReviewSubmissionSchema>

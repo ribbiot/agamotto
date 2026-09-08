@@ -141,7 +141,9 @@ describe('GET /api/review/[id] — ATH-30 stored replay', () => {
     expect(eventsOfType(text, 'finding')).toEqual([
       { finding: COMPLETE_RESULT.blockingIssues[0] },
     ])
-    expect(eventsOfType(text, 'done')).toEqual([{ reviewId: REVIEW_ID }])
+    expect(eventsOfType(text, 'done')).toEqual([
+      { reviewId: REVIEW_ID, extras: {} },
+    ])
   })
 
   it('errors when prUrl is omitted and no COMPLETE row exists', async () => {

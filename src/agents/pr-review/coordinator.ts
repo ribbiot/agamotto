@@ -40,6 +40,7 @@ import {
 } from '../../lib/github-conversation'
 import type { Octokit } from '@octokit/rest'
 import { OverlayAgent, type AgentOverlays } from '../../lib/overlays'
+import { extrasFromReview } from '../../lib/review-sections'
 
 // ── Public interface ──────────────────────────────────────────────────────────
 
@@ -484,7 +485,7 @@ async function _runReview(
   })
 
   emit('checkpoint', { stage: 'OUTPUT', status: 'PASS', reviewId })
-  emit('done', { reviewId })
+  emit('done', { reviewId, extras: extrasFromReview(review) })
 
   // ── Structured completion log (Railway-friendly) ──────────────────────────
   console.log(

@@ -1,4 +1,11 @@
 import { defaultFindingAccepted } from './finding-quality'
+import {
+  extrasFromReview,
+  hydrateSectionUi,
+  type ReviewCommentExtras,
+  type UiSectionDecision,
+} from './review-sections'
+import { ReviewSection } from '../agents/pr-review/schema'
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -36,7 +43,13 @@ export interface StoredReviewPayload {
   verdict?: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
   verdictSummary?: string
   whatLooksGood?: string[]
+  questions?: string[]
   testingRecommendations?: string[]
+  ticketAlignment?: {
+    requirement: string
+    met: boolean
+    location?: string
+  }[]
 }
 
 export type StoredUiDecision = {
@@ -52,6 +65,8 @@ export interface StoredReviewUiState {
   isCachedReview: true
   findings: StoredFinding[]
   decisions: Record<string, StoredUiDecision>
+  extras: ReviewCommentExtras
+  sections: Record<ReviewSection, UiSectionDecision>
   phaseStatuses: Record<'INPUT' | 'CONTEXT' | 'DOMAIN' | 'OUTPUT', 'done'>
   activity: { type: 'phase'; text: string }[]
   postedToGitHub: boolean
@@ -118,11 +133,15 @@ export function storedReviewUiState(
     ...(result.nits ?? []),
   ]
 
+  const extras = extrasFromReview(result)
+
   return {
     status: 'done',
     isCachedReview: true,
     findings,
     decisions: decisionsFromSubmission(findings, submission),
+    extras,
+    sections: hydrateSectionUi(extras, submission),
     phaseStatuses: {
       INPUT: 'done',
       CONTEXT: 'done',

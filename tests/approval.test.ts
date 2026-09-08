@@ -6,6 +6,7 @@ import {
   buildSubmission,
   summariseDecisions,
   formatGitHubComment,
+  formatApprovalComment,
 } from '../src/agents/pr-review/approval'
 import type { PRReview, Finding } from '../src/agents/pr-review/schema'
 
@@ -39,12 +40,14 @@ const review: PRReview = {
   prUrl: 'https://github.com/owner/repo/pull/1',
   summary: 'Good PR',
   fileCoverage: [],
-  ticketAlignment: [],
+  ticketAlignment: [
+    { requirement: 'Save without posting', met: true, location: 'finalize' },
+  ],
   whatLooksGood: ['Clean code'],
   blockingIssues: [blocking],
   suggestions: [suggestion],
   nits: [nit],
-  questions: [],
+  questions: ['Why skip the migration?'],
   testingRecommendations: ['Run unit tests'],
   verdict: 'REQUEST_CHANGES',
   verdictSummary: 'Fix the blocking issue before merging.',
@@ -151,6 +154,31 @@ describe('formatGitHubComment', () => {
     expect(comment).toContain('🔴 Blocking Issues')
   })
 
+  it('includes each finding confidence percent next to the file location', () => {
+    const withLine = makeFinding({
+      id: 'b1',
+      severity: 'BLOCKING',
+      title: 'Blocking finding',
+      file: 'app/route.ts',
+      line: 183,
+      confidence: 0.65,
+    })
+    const withLineReview: PRReview = {
+      ...review,
+      blockingIssues: [withLine],
+    }
+    const comment = formatGitHubComment(
+      withLineReview,
+      buildSubmission(buildInitialState(withLineReview), true)
+    )
+    expect(comment).toContain(
+      '**Blocking finding** (`app/route.ts:183`, 65% confidence)'
+    )
+    expect(comment).toContain(
+      '**Suggestion finding** (`src/foo.ts`, 80% confidence)'
+    )
+  })
+
   it('includes testing recommendations', () => {
     const state = buildInitialState(review)
     const sub = buildSubmission(state, true)
@@ -182,5 +210,108 @@ describe('formatGitHubComment', () => {
     const sub = buildSubmission(state, true)
     const comment = formatGitHubComment(noNitReview, sub)
     expect(comment).not.toContain('💬 Nits')
+  })
+
+  it('omits preamble, what-looks-good, and testing when those sections are REJECT', () => {
+    const state = buildInitialState(review)
+    const sub = {
+      ...buildSubmission(state, true),
+      sections: [
+        { section: 'PREAMBLE' as const, action: 'REJECT' as const },
+        { section: 'WHAT_LOOKS_GOOD' as const, action: 'REJECT' as const },
+        {
+          section: 'TESTING_RECOMMENDATIONS' as const,
+          action: 'REJECT' as const,
+        },
+        { section: 'TICKET_ALIGNMENT' as const, action: 'REJECT' as const },
+        { section: 'QUESTIONS' as const, action: 'REJECT' as const },
+      ],
+    }
+    const comment = formatGitHubComment(review, sub)
+    expect(comment).toContain('## AI PR Review — REQUEST_CHANGES')
+    expect(comment).not.toContain('Fix the blocking issue')
+    expect(comment).not.toContain('Good PR')
+    expect(comment).not.toContain('What Looks Good')
+    expect(comment).not.toContain('Clean code')
+    expect(comment).not.toContain('Testing Recommendations')
+    expect(comment).not.toContain('Run unit tests')
+    expect(comment).not.toContain('Save without posting')
+    expect(comment).not.toContain('Why skip the migration')
+  })
+
+  it('places AC alignment after the preamble and questions before testing', () => {
+    const state = buildInitialState(review)
+    const comment = formatGitHubComment(review, buildSubmission(state, true))
+    const ac = comment.indexOf('### Acceptance Criteria alignment')
+    const findings = comment.indexOf('### 🔴 Blocking Issues')
+    const looksGood = comment.indexOf('### ✅ What Looks Good')
+    const questions = comment.indexOf('### Questions')
+    const testing = comment.indexOf('### 🧪 Testing Recommendations')
+    expect(ac).toBeGreaterThan(-1)
+    expect(ac).toBeLessThan(findings)
+    expect(looksGood).toBeGreaterThan(findings)
+    expect(questions).toBeGreaterThan(looksGood)
+    expect(testing).toBeGreaterThan(questions)
+    expect(comment).toContain('[x] Save without posting — finalize')
+    expect(comment).toContain('Why skip the migration?')
+  })
+
+  it('uses edited section bodies when sections are EDIT', () => {
+    const state = buildInitialState(review)
+    const sub = {
+      ...buildSubmission(state, true),
+      sections: [
+        {
+          section: 'PREAMBLE' as const,
+          action: 'EDIT' as const,
+          editedBody: 'Rewritten intro.',
+        },
+        {
+          section: 'WHAT_LOOKS_GOOD' as const,
+          action: 'EDIT' as const,
+          editedBody: 'Great tests',
+        },
+        {
+          section: 'TESTING_RECOMMENDATIONS' as const,
+          action: 'EDIT' as const,
+          editedBody: '- Hit the new endpoint',
+        },
+      ],
+    }
+    const comment = formatGitHubComment(review, sub)
+    expect(comment).toContain('Rewritten intro.')
+    expect(comment).not.toContain('Good PR')
+    expect(comment).toContain('Great tests')
+    expect(comment).not.toContain('Clean code')
+    expect(comment).toContain('Hit the new endpoint')
+    expect(comment).not.toContain('Run unit tests')
+  })
+})
+
+describe('formatApprovalComment', () => {
+  it('includes testing recommendations on a clean review', () => {
+    const comment = formatApprovalComment({ ...review, blockingIssues: [] })
+    expect(comment).toContain('Run unit tests')
+    expect(comment).toContain('Good PR')
+    expect(comment).toContain('Clean code')
+  })
+
+  it('omits excluded sections on a clean review', () => {
+    const comment = formatApprovalComment({ ...review, blockingIssues: [] }, [
+      { section: 'PREAMBLE' as const, action: 'REJECT' as const },
+      { section: 'WHAT_LOOKS_GOOD' as const, action: 'REJECT' as const },
+      {
+        section: 'TESTING_RECOMMENDATIONS' as const,
+        action: 'REJECT' as const,
+      },
+      { section: 'TICKET_ALIGNMENT' as const, action: 'REJECT' as const },
+      { section: 'QUESTIONS' as const, action: 'REJECT' as const },
+    ])
+    expect(comment).toContain('APPROVED')
+    expect(comment).not.toContain('Good PR')
+    expect(comment).not.toContain('Clean code')
+    expect(comment).not.toContain('Run unit tests')
+    expect(comment).not.toContain('Save without posting')
+    expect(comment).not.toContain('Why skip the migration')
   })
 })

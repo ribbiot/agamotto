@@ -20,7 +20,10 @@ import {
 } from '../../../../../src/lib/github-auth'
 import { parsePrUrl } from '../../../../../src/lib/queue'
 import { markPrReviewed } from '../../../../../src/memory/tracked-pr-store'
-import type { FindingDecision } from '../../../../../src/agents/pr-review/schema'
+import {
+  SectionDecisionSchema,
+  type FindingDecision,
+} from '../../../../../src/agents/pr-review/schema'
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -33,6 +36,7 @@ const FindingDecisionInput = z.object({
 
 const FinalizeBody = z.object({
   decisions: z.array(FindingDecisionInput).default([]),
+  sections: z.array(SectionDecisionSchema).optional(),
   postComment: z.boolean().default(false),
   approve: z.boolean().default(false),
 })
@@ -131,7 +135,14 @@ export async function POST(
     )
   }
 
-  const { decisions: rawDecisions, postComment, approve } = parsed.data
+  const {
+    decisions: rawDecisions,
+    sections: rawSections,
+    postComment,
+    approve,
+  } = parsed.data
+  const sectionsPatch =
+    rawSections && rawSections.length > 0 ? { sections: rawSections } : {}
 
   // ── Load PRReview from Supabase ───────────────────────────────────────────
   let reviewRow
@@ -213,19 +224,22 @@ export async function POST(
         sessionExpiredComment,
         githubToken,
         prUrlParts,
-        commentBody: formatApprovalComment(review),
+        commentBody: formatApprovalComment(review, rawSections),
       })
     }
-    const approvalSubmission = buildSubmission(
-      {
-        reviewId,
-        decisions: {},
-        submitting: false,
-        submitted: true,
-        result: null,
-      },
-      githubCommentPosted(postComment, commentResult)
-    )
+    const approvalSubmission = {
+      ...buildSubmission(
+        {
+          reviewId,
+          decisions: {},
+          submitting: false,
+          submitted: true,
+          result: null,
+        },
+        githubCommentPosted(postComment, commentResult)
+      ),
+      ...sectionsPatch,
+    }
     await memory
       .storeReview(
         { review, submission: approvalSubmission },
@@ -295,13 +309,17 @@ export async function POST(
         reviewId,
         decisions: Object.values(decisionMap),
         postToGitHub: false,
+        ...sectionsPatch,
       }),
     })
   }
-  const submission = buildSubmission(
-    approvalState,
-    githubCommentPosted(postComment, commentResult)
-  )
+  const submission = {
+    ...buildSubmission(
+      approvalState,
+      githubCommentPosted(postComment, commentResult)
+    ),
+    ...sectionsPatch,
+  }
 
   await memory
     .storeReview(

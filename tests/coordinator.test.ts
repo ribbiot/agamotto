@@ -216,7 +216,14 @@ describe('runReview (coordinator)', () => {
 
     expect(emit).toHaveBeenCalledWith(
       'done',
-      expect.objectContaining({ reviewId: 'test-rev-4' })
+      expect.objectContaining({
+        reviewId: 'test-rev-4',
+        extras: expect.objectContaining({
+          summary: 'Clean PR with minor improvements.',
+          whatLooksGood: ['Good test coverage'],
+          testingRecommendations: ['Run integration tests'],
+        }),
+      })
     )
   })
 

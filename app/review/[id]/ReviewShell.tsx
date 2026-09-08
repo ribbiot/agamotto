@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import {
   storedReviewUiState,
@@ -26,9 +26,29 @@ import {
   finalizeDecisionsFromUi,
   formatReviewCommentFromUi,
 } from '../../../src/lib/review-comment-copy'
-import { findingCategories } from '../../../src/agents/pr-review/schema'
+import {
+  findingCategories,
+  ReviewSection,
+} from '../../../src/agents/pr-review/schema'
 import { formatConfidencePercent } from '../../../src/lib/confidence-bar'
 import { ConfidenceBar } from '../../components/ConfidenceBar'
+import {
+  IncludeAllState,
+  allCardsCollapsed,
+  collapsedShadeMap,
+  displayedSectionText,
+  extrasFromReview,
+  findingShadeKey,
+  hydrateSectionUi,
+  includeAllState,
+  reviewShadeKeys,
+  sectionDecisionsFromUi,
+  sectionHasContent,
+  sectionShadeKey,
+  visibleReviewSections,
+  type ReviewCommentExtras,
+  type UiSectionDecision,
+} from '../../../src/lib/review-sections'
 
 interface Finding {
   id: string
@@ -75,6 +95,22 @@ const SEVERITY_BADGE: Record<Finding['severity'], string> = {
   BLOCKING: 'bg-red-700 text-red-100',
   SUGGESTION: 'bg-yellow-700 text-yellow-100',
   NIT: 'bg-gray-700 text-gray-300',
+}
+
+const SECTION_CARD: Record<ReviewSection, string> = {
+  [ReviewSection.PREAMBLE]: 'border-indigo-800 bg-gray-900',
+  [ReviewSection.TICKET_ALIGNMENT]: 'border-amber-800 bg-amber-950/20',
+  [ReviewSection.WHAT_LOOKS_GOOD]: 'border-green-800 bg-green-950/20',
+  [ReviewSection.QUESTIONS]: 'border-violet-800 bg-violet-950/20',
+  [ReviewSection.TESTING_RECOMMENDATIONS]: 'border-sky-800 bg-sky-950/20',
+}
+
+const SECTION_LABEL: Record<ReviewSection, string> = {
+  [ReviewSection.PREAMBLE]: 'Preamble',
+  [ReviewSection.TICKET_ALIGNMENT]: 'Acceptance Criteria alignment',
+  [ReviewSection.WHAT_LOOKS_GOOD]: 'What looks good',
+  [ReviewSection.QUESTIONS]: 'Questions',
+  [ReviewSection.TESTING_RECOMMENDATIONS]: 'Testing recommendations',
 }
 
 const PIPELINE: { key: string; label: string }[] = [
@@ -188,9 +224,20 @@ export function ReviewShell({
   const [decisions, setDecisions] = useState<Record<string, FindingDecision>>(
     hydrated?.decisions ?? {}
   )
+  const [commentExtras, setCommentExtras] = useState<ReviewCommentExtras>(
+    hydrated?.extras ?? {}
+  )
+  const [sections, setSections] = useState<
+    Record<ReviewSection, UiSectionDecision>
+  >(hydrated?.sections ?? hydrateSectionUi({}))
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
   const [editBody, setEditBody] = useState('')
+  const [editingSection, setEditingSection] = useState<ReviewSection | null>(
+    null
+  )
+  const [sectionEditBody, setSectionEditBody] = useState('')
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [submitKind, setSubmitKind] = useState<SubmitKind | null>(null)
   const [postedToGitHub, setPostedToGitHub] = useState(
     hydrated?.postedToGitHub ?? false
@@ -359,11 +406,26 @@ export function ReviewShell({
       })
     })
 
-    es.addEventListener('done', () => {
+    es.addEventListener('done', e => {
       setStatus(streamFailedRef.current ? 'error' : 'done')
       setElapsed(Date.now() - startTimeRef.current)
       if (!streamFailedRef.current) {
         addActivity({ type: 'phase', text: '🎉 Review complete' })
+        try {
+          const data = JSON.parse((e as MessageEvent).data ?? '{}') as {
+            extras?: unknown
+          }
+          if (data.extras && typeof data.extras === 'object') {
+            const extras = extrasFromReview(data.extras)
+            setCommentExtras(extras)
+            // extras arrive only on done; section cards are hidden until then,
+            // so this is the first user-visible section state, not a clobber
+            // of in-progress edits. COMPLETE View Review skips EventSource.
+            setSections(hydrateSectionUi(extras))
+          }
+        } catch {
+          // extras are optional on older streams
+        }
       }
       es.close()
     })
@@ -401,6 +463,7 @@ export function ReviewShell({
   }
 
   function startEdit(finding: Finding) {
+    setEditingSection(null)
     setEditingId(finding.id)
     const d = decisions[finding.id]
     setEditTitle(d?.editedTitle ?? finding.title)
@@ -422,6 +485,63 @@ export function ReviewShell({
     setEditingId(null)
   }
 
+  function toggleSection(section: ReviewSection) {
+    setSections(prev => ({
+      ...prev,
+      [section]: { ...prev[section], accepted: !prev[section].accepted },
+    }))
+  }
+
+  function toggleCollapsed(key: string) {
+    setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  function setIncludeAll(accepted: boolean) {
+    setDecisions(prev => {
+      const next = { ...prev }
+      for (const f of findings) {
+        next[f.id] = { ...prev[f.id], findingId: f.id, accepted }
+      }
+      return next
+    })
+    setSections(prev => {
+      const next = { ...prev }
+      for (const section of visibleReviewSections(commentExtras, prev)) {
+        next[section] = { ...prev[section], accepted }
+      }
+      return next
+    })
+  }
+
+  function toggleCollapseAll(keys: string[]) {
+    setCollapsed(prev =>
+      allCardsCollapsed(prev, keys) ? {} : collapsedShadeMap(keys)
+    )
+  }
+
+  function startSectionEdit(section: ReviewSection) {
+    setEditingId(null)
+    setEditingSection(section)
+    setSectionEditBody(
+      displayedSectionText(section, commentExtras, sections[section])
+    )
+  }
+
+  function saveSectionEdit(section: ReviewSection) {
+    // Baseline is generated text so saving that text back clears editedBody.
+    const original = displayedSectionText(section, commentExtras)
+    const trimmed = sectionEditBody
+    setSections(prev => ({
+      ...prev,
+      [section]: {
+        ...prev[section],
+        editedBody:
+          trimmed !== original && trimmed.length > 0 ? trimmed : undefined,
+      },
+    }))
+    setEditingSection(null)
+  }
+
   async function copyComment(text: string) {
     try {
       await navigator.clipboard.writeText(text)
@@ -438,6 +558,7 @@ export function ReviewShell({
     try {
       const body = {
         decisions: finalizeDecisionsFromUi(decisions),
+        sections: sectionDecisionsFromUi(sections),
         postComment,
       }
       const res = await fetch(`/api/review/${reviewId}/finalize`, {
@@ -482,7 +603,12 @@ export function ReviewShell({
       const res = await fetch(`/api/review/${reviewId}/finalize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decisions: [], postComment, approve: true }),
+        body: JSON.stringify({
+          decisions: [],
+          sections: sectionDecisionsFromUi(sections),
+          postComment,
+          approve: true,
+        }),
       })
       const data = await res.json()
       setSubmitResult(
@@ -513,13 +639,50 @@ export function ReviewShell({
   }
   const accepted = Object.values(decisions).filter(d => d.accepted).length
   const total = findings.length
+  const visibleSections = visibleReviewSections(commentExtras, sections)
+  const shadeKeys = reviewShadeKeys(
+    findings.map(f => f.id),
+    visibleSections
+  )
+  const cardsCollapsed = allCardsCollapsed(collapsed, shadeKeys)
+  const includeState = includeAllState([
+    ...findings.map(f => decisions[f.id]?.accepted ?? true),
+    ...visibleSections.map(section => sections[section]?.accepted ?? false),
+  ])
+  const hasCards = shadeKeys.length > 0
   const busy = submitKind !== null
   const reviewMarkdown = formatReviewCommentFromUi({
     reviewId,
     findings,
     decisions,
-    extras: storedResult ?? undefined,
+    extras: commentExtras,
+    sections,
   })
+
+  function renderSection(section: ReviewSection) {
+    if (
+      status !== 'done' ||
+      !sectionHasContent(section, commentExtras, sections[section])
+    ) {
+      return null
+    }
+    return (
+      <ReviewSectionCard
+        section={section}
+        extras={commentExtras}
+        decision={sections[section]}
+        isEditing={editingSection === section}
+        editBody={sectionEditBody}
+        collapsed={Boolean(collapsed[sectionShadeKey(section)])}
+        onToggle={() => toggleSection(section)}
+        onToggleCollapse={() => toggleCollapsed(sectionShadeKey(section))}
+        onStartEdit={() => startSectionEdit(section)}
+        onSave={() => saveSectionEdit(section)}
+        onCancel={() => setEditingSection(null)}
+        onEditBodyChange={setSectionEditBody}
+      />
+    )
+  }
 
   return (
     <div className="flex gap-6">
@@ -548,7 +711,7 @@ export function ReviewShell({
         </div>
 
         {/* Status bar */}
-        <div className="mb-4 flex items-center gap-3">
+        <div className="mb-4 flex flex-wrap items-center gap-3">
           <StatusIndicator status={status} />
           {mode === 'quick' && (
             <span className="rounded-full bg-indigo-900/50 border border-indigo-700 px-2 py-0.5 text-xs font-semibold text-indigo-300">
@@ -560,7 +723,48 @@ export function ReviewShell({
               {total} finding{total !== 1 ? 's' : ''} — {accepted} accepted
             </span>
           )}
+          {status === 'done' && hasCards && (
+            <div className="ml-auto flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => toggleCollapseAll(shadeKeys)}
+                className="rounded border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800"
+              >
+                {cardsCollapsed ? 'Expand all' : 'Collapse all'}
+              </button>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="accent-indigo-500"
+                  checked={includeState === IncludeAllState.ALL}
+                  ref={el => {
+                    if (el)
+                      el.indeterminate = includeState === IncludeAllState.MIXED
+                  }}
+                  onChange={e => setIncludeAll(e.target.checked)}
+                />
+                <span className="text-xs text-gray-400">Include all</span>
+              </label>
+            </div>
+          )}
         </div>
+
+        {status === 'done' &&
+          (sectionHasContent(
+            ReviewSection.PREAMBLE,
+            commentExtras,
+            sections[ReviewSection.PREAMBLE]
+          ) ||
+            sectionHasContent(
+              ReviewSection.TICKET_ALIGNMENT,
+              commentExtras,
+              sections[ReviewSection.TICKET_ALIGNMENT]
+            )) && (
+            <div className="mb-3 flex flex-col gap-3">
+              {renderSection(ReviewSection.PREAMBLE)}
+              {renderSection(ReviewSection.TICKET_ALIGNMENT)}
+            </div>
+          )}
 
         {/* Findings placeholder while running */}
         {findings.length === 0 && status !== 'done' && status !== 'error' && (
@@ -587,6 +791,7 @@ export function ReviewShell({
           {findings.map(f => {
             const decision = decisions[f.id]
             const isEditing = editingId === f.id
+            const isCollapsed = Boolean(collapsed[findingShadeKey(f.id)])
 
             return (
               <div
@@ -595,11 +800,16 @@ export function ReviewShell({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className={`rounded px-2 py-0.5 text-xs font-semibold ${SEVERITY_BADGE[f.severity]}`}
+                    <ShadeButton
+                      expanded={!isCollapsed}
+                      onClick={() => toggleCollapsed(findingShadeKey(f.id))}
                     >
-                      {f.severity}
-                    </span>
+                      <span
+                        className={`rounded px-2 py-0.5 text-xs font-semibold ${SEVERITY_BADGE[f.severity]}`}
+                      >
+                        {f.severity}
+                      </span>
+                    </ShadeButton>
                     <span className="text-xs text-gray-400 font-mono">
                       {f.file}
                       {f.line ? `:${f.line}` : ''}
@@ -635,77 +845,104 @@ export function ReviewShell({
                   </div>
                 </div>
 
-                <p className="mt-2 text-sm font-medium text-gray-100">
-                  {decisions[f.id]?.editedTitle ? (
-                    <span className="text-indigo-300">
-                      {decisions[f.id].editedTitle}
-                    </span>
-                  ) : (
-                    f.title
-                  )}
-                </p>
-                <p className="mt-1 text-sm text-gray-400">
-                  {decisions[f.id]?.editedBody ?? f.body}
-                </p>
-
-                {isEditing ? (
-                  <div className="mt-3 space-y-2">
-                    <div>
-                      <label className="mb-1 block text-xs text-gray-500">
-                        Title
-                      </label>
-                      <input
-                        type="text"
-                        className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm text-white focus:border-indigo-500 focus:outline-none"
-                        value={editTitle}
-                        onChange={e => setEditTitle(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs text-gray-500">
-                        Description
-                      </label>
-                      <textarea
-                        className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
-                        rows={4}
-                        value={editBody}
-                        onChange={e => setEditBody(e.target.value)}
-                      />
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => saveEdit(f.id)}
-                        className="rounded bg-indigo-600 px-3 py-1 text-xs text-white hover:bg-indigo-500"
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={() => setEditingId(null)}
-                        className="rounded bg-gray-700 px-3 py-1 text-xs text-gray-300 hover:bg-gray-600"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
+                {!isCollapsed && (
                   <>
-                    {f.suggestedFix && (
-                      <p className="mt-2 rounded bg-gray-800 px-3 py-2 font-mono text-xs text-green-400">
-                        {f.suggestedFix}
-                      </p>
+                    <p className="mt-2 text-sm font-medium text-gray-100">
+                      {decisions[f.id]?.editedTitle ? (
+                        <span className="text-indigo-300">
+                          {decisions[f.id].editedTitle}
+                        </span>
+                      ) : (
+                        f.title
+                      )}
+                    </p>
+                    <p className="mt-1 text-sm text-gray-400">
+                      {decisions[f.id]?.editedBody ?? f.body}
+                    </p>
+
+                    {isEditing ? (
+                      <div className="mt-3 space-y-2">
+                        <div>
+                          <label className="mb-1 block text-xs text-gray-500">
+                            Title
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                            value={editTitle}
+                            onChange={e => setEditTitle(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs text-gray-500">
+                            Description
+                          </label>
+                          <textarea
+                            className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                            rows={4}
+                            value={editBody}
+                            onChange={e => setEditBody(e.target.value)}
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => saveEdit(f.id)}
+                            className="rounded bg-indigo-600 px-3 py-1 text-xs text-white hover:bg-indigo-500"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={() => setEditingId(null)}
+                            className="rounded bg-gray-700 px-3 py-1 text-xs text-gray-300 hover:bg-gray-600"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {f.suggestedFix && (
+                          <p className="mt-2 rounded bg-gray-800 px-3 py-2 font-mono text-xs text-green-400">
+                            {f.suggestedFix}
+                          </p>
+                        )}
+                        <button
+                          onClick={() => startEdit(f)}
+                          className="mt-2 text-xs text-indigo-400 hover:underline"
+                        >
+                          Edit suggestion
+                        </button>
+                      </>
                     )}
-                    <button
-                      onClick={() => startEdit(f)}
-                      className="mt-2 text-xs text-indigo-400 hover:underline"
-                    >
-                      Edit suggestion
-                    </button>
                   </>
                 )}
               </div>
             )
           })}
         </div>
+
+        {status === 'done' &&
+          (sectionHasContent(
+            ReviewSection.WHAT_LOOKS_GOOD,
+            commentExtras,
+            sections[ReviewSection.WHAT_LOOKS_GOOD]
+          ) ||
+            sectionHasContent(
+              ReviewSection.QUESTIONS,
+              commentExtras,
+              sections[ReviewSection.QUESTIONS]
+            ) ||
+            sectionHasContent(
+              ReviewSection.TESTING_RECOMMENDATIONS,
+              commentExtras,
+              sections[ReviewSection.TESTING_RECOMMENDATIONS]
+            )) && (
+            <div className="mt-3 flex flex-col gap-3">
+              {renderSection(ReviewSection.WHAT_LOOKS_GOOD)}
+              {renderSection(ReviewSection.QUESTIONS)}
+              {renderSection(ReviewSection.TESTING_RECOMMENDATIONS)}
+            </div>
+          )}
 
         {/* Submit controls */}
         {status === 'done' && total > 0 && (
@@ -998,6 +1235,128 @@ function SiblingNavBlock({ nav }: { nav: SiblingReviewNav }) {
           <span className={`${btn} ${disabled}`}>Newer →</span>
         )}
       </div>
+    </div>
+  )
+}
+
+function ShadeButton({
+  expanded,
+  onClick,
+  children,
+}: {
+  expanded: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-expanded={expanded}
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 text-left hover:opacity-90"
+    >
+      <span className="text-xs text-gray-500" aria-hidden="true">
+        {expanded ? '▾' : '▸'}
+      </span>
+      {children}
+    </button>
+  )
+}
+
+function ReviewSectionCard({
+  section,
+  extras,
+  decision,
+  isEditing,
+  editBody,
+  collapsed,
+  onToggle,
+  onToggleCollapse,
+  onStartEdit,
+  onSave,
+  onCancel,
+  onEditBodyChange,
+}: {
+  section: ReviewSection
+  extras: ReviewCommentExtras
+  decision: UiSectionDecision
+  isEditing: boolean
+  editBody: string
+  collapsed: boolean
+  onToggle: () => void
+  onToggleCollapse: () => void
+  onStartEdit: () => void
+  onSave: () => void
+  onCancel: () => void
+  onEditBodyChange: (value: string) => void
+}) {
+  const text = displayedSectionText(section, extras, decision)
+  return (
+    <div
+      className={`rounded-lg border p-4 transition-opacity ${SECTION_CARD[section]} ${decision.accepted === false ? 'opacity-50' : ''}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <ShadeButton expanded={!collapsed} onClick={onToggleCollapse}>
+          <span className="text-sm font-medium text-gray-100">
+            {SECTION_LABEL[section]}
+          </span>
+        </ShadeButton>
+        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            className="accent-indigo-500"
+            checked={decision.accepted}
+            onChange={onToggle}
+          />
+          <span className="text-xs text-gray-400">Include</span>
+        </label>
+      </div>
+      {!collapsed && (
+        <>
+          <p className="mt-2 whitespace-pre-wrap text-sm text-gray-400">
+            {text}
+          </p>
+          {isEditing ? (
+            <div className="mt-3 space-y-2">
+              <textarea
+                className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                rows={
+                  section === ReviewSection.PREAMBLE ||
+                  section === ReviewSection.TICKET_ALIGNMENT
+                    ? 5
+                    : 4
+                }
+                value={editBody}
+                onChange={e => onEditBodyChange(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={onSave}
+                  className="rounded bg-indigo-600 px-3 py-1 text-xs text-white hover:bg-indigo-500"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  className="rounded bg-gray-700 px-3 py-1 text-xs text-gray-300 hover:bg-gray-600"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onStartEdit}
+              className="mt-2 text-xs text-indigo-400 hover:underline"
+            >
+              Edit
+            </button>
+          )}
+        </>
+      )}
     </div>
   )
 }
